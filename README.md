@@ -16,27 +16,36 @@ It provides:
 
 ## Architecture
 
+**Client Send - Response**
+
 WS Client
-   ↓ (ws://domain/ws/webhook/:id)
+   ↓ (ws://domain/ws/{backend_path})
 Gateway
-   ↓ (HTTP POST /webhook/:id)
+   ↓ (HTTP POST /{backend_path})
 Backend (e.g. n8n)
    ↓
 Response
    ↓
+Gateway
+   ↓
 WS Client
 
-Backend → /push → Gateway → WS Clients
+**Backend Push to Client**
+Backend
+   ↓ (HTTP POST /push)
+Gateway
+   ↓
+WS Client
 
 ---
 
-# Key Design Rule
+# Key Design Rule of the Gateway
 
 All WebSocket traffic MUST be prefixed with `/ws`.
 
 This ensures separation between:
 - WebSocket transport layer (`/ws/*`)
-- HTTP backend webhooks (`/webhook/*`)
+- HTTP API endpoints (`/push`)
 
 Invalid WS paths are rejected with `400 Bad Request`.
 
@@ -47,9 +56,9 @@ Invalid WS paths are rejected with `400 Bad Request`.
 - WebSocket → HTTP proxy (path-preserving after `/ws` stripping)
 - Automatic client ID generation (`x-client-id`)
 - Backend push API (`/push`)
-- Broadcast support (`broadcast` client ID)
+- Broadcast support (use `x-client-id : 'broadcast'`)
 - Per-connection idle timeout cleanup
-- Optional API key authentication
+- Optional API key authentication for backend
 - Strict `/ws` namespace enforcement
 
 ---
@@ -67,9 +76,9 @@ npm install
 import wsToHttpGateway from "./gateway";
 
 const server = wsToHttpGateway({
-  target_url: "http://localhost:5678",
-  push_api_key: "my-secret-key",
-  max_idle_millis: 300000
+    target_url: "http://localhost:8080",
+    push_api_key: "my-secret-key",
+    max_idle_millis: 300000
 });
 
 server.listen(8080);
@@ -84,14 +93,14 @@ const ws = new WebSocket("ws://localhost:8080/ws/webhook/test");
 
 ---
 
-## Routing transformation
+## Routing transformation made in Gateway
 
 /ws/webhook/test
 → /webhook/test
 
 ---
 
-## HTTP request
+## HTTP request sent to Backend
 
 POST /webhook/test
 Content-Type: text/plain
@@ -145,7 +154,7 @@ curl -X POST http://localhost:8080/push \
 
 # Response Codes
 
-201 → Message delivered
+201 → Message sent
 400 → Missing client ID
 401 → Unauthorized
 404 → Client not found
@@ -166,25 +175,29 @@ Used for:
 ---
 
 # Configuration
-
+``` typescript
 interface GatewayConfig {
-  target_url: string;
-  push_api_key?: string;
-  max_idle_millis?: number;
+    target_url: string;
+    push_api_key?: string;
+    max_idle_millis?: number;
 }
+```
 
 ---
 
 ## target_url
 
-Base HTTP backend URL:
-http://localhost:5678
+Base HTTP backend URL.
+
+Can be configured using `TARGET_URL` env variable.
 
 ---
 
 ## push_api_key
 
 If set, required for /push requests.
+
+Can be configured using `PUSH_API_KEY` env variable.
 
 ---
 
@@ -193,6 +206,8 @@ If set, required for /push requests.
 Default: 5 minutes
 
 Closes idle WS connections.
+
+Can be configured using `MAX_IDLE_MILLIS` env variable.
 
 ---
 
@@ -232,7 +247,7 @@ Backend failure returns:
 
 # Limitations
 
-- No persistence layer
+- No persistence layer on WebSockets
 - No horizontal scaling support
 - No WS auth system
 - No retry mechanism
@@ -243,7 +258,7 @@ Backend failure returns:
 # Recommended Improvements
 
 - Redis client store
-- JWT authentication
+- JWT authentication for Gateway connection.
 - JSON protocol layer
 - Retry queue
 - Metrics/observability
