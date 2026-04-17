@@ -34,7 +34,7 @@ app.listen(BACKEND_PORT, () => {
     console.log(`Backend server is listening on port ${BACKEND_PORT}`);
 });
 
-const client = new WebSocket(`ws://localhost:${GATEWAY_PORT}/ping`);
+const client = new WebSocket(`ws://localhost:${GATEWAY_PORT}/ws/ping`);
 
 client.on("open", () => {
     console.log("WebSocket client connected to gateway. Pinging backend...");
