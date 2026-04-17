@@ -1,11 +1,14 @@
 # WS → HTTP Gateway
 
-A lightweight **WebSocket to HTTP bridge** with optional backend → client push capabilities.
+A lightweight **WebSocket-to-HTTP bridge with bidirectional push support**, designed to integrate WebSocket clients with existing HTTP systems (e.g. n8n webhooks).
 
-This service allows:
+It provides:
 
-* WebSocket clients to communicate with an HTTP backend
-* The backend to **push messages back to specific clients or broadcast to all**
+- WS → HTTP proxying with path mapping
+- Backend → WS push API
+- Broadcast + targeted delivery
+- Explicit `/ws/*` routing boundary for safety
+- Optional API key protection for push endpoint
 
 ---
 
@@ -13,38 +16,47 @@ This service allows:
 
 ## Architecture
 
-```
 WS Client
-   ↓
-WebSocket Gateway
-   ↓
-HTTP Backend (POST)
+   ↓ (ws://domain/ws/webhook/:id)
+Gateway
+   ↓ (HTTP POST /webhook/:id)
+Backend (e.g. n8n)
    ↓
 Response
    ↓
 WS Client
 
-Backend → Gateway (/push) → WS Client(s)
-```
+Backend → /push → Gateway → WS Clients
+
+---
+
+# Key Design Rule
+
+All WebSocket traffic MUST be prefixed with `/ws`.
+
+This ensures separation between:
+- WebSocket transport layer (`/ws/*`)
+- HTTP backend webhooks (`/webhook/*`)
+
+Invalid WS paths are rejected with `400 Bad Request`.
 
 ---
 
 # Features
 
-* WebSocket → HTTP proxying (per-path routing)
-* Automatic client ID assignment (`x-client-id`)
-* Backend → client push system
-* Broadcast support
-* Idle connection cleanup
-* Optional API key authentication for push endpoint
+- WebSocket → HTTP proxy (path-preserving after `/ws` stripping)
+- Automatic client ID generation (`x-client-id`)
+- Backend push API (`/push`)
+- Broadcast support (`broadcast` client ID)
+- Per-connection idle timeout cleanup
+- Optional API key authentication
+- Strict `/ws` namespace enforcement
 
 ---
 
 # Installation
 
-```bash
 npm install
-```
 
 ---
 
@@ -52,19 +64,15 @@ npm install
 
 ## Basic Setup
 
-```ts
 import wsToHttpGateway from "./gateway";
 
 const server = wsToHttpGateway({
   target_url: "http://localhost:5678",
-  push_api_key: "my-secret-key", // optional
-  max_idle_millis: 300000        // optional (default: 5 min)
+  push_api_key: "my-secret-key",
+  max_idle_millis: 300000
 });
 
-server.listen(8080, () => {
-  console.log("Gateway running on port 8080");
-});
-```
+server.listen(8080);
 
 ---
 
@@ -72,213 +80,177 @@ server.listen(8080, () => {
 
 ## Connect
 
-```js
-const ws = new WebSocket("ws://localhost:8080/chat");
-```
-
-## Send message
-
-```js
-ws.send("hello");
-```
-
-## What happens
-
-1. Gateway receives message
-2. Sends HTTP request:
-
-```
-POST http://<target_url>/chat
-Content-Type: text/plain
-x-client-id: <generated-id>
-```
-
-3. Response is sent back to WS client
+const ws = new WebSocket("ws://localhost:8080/ws/webhook/test");
 
 ---
 
-# Push API (Backend → Client)
+## Routing transformation
+
+/ws/webhook/test
+→ /webhook/test
+
+---
+
+## HTTP request
+
+POST /webhook/test
+Content-Type: text/plain
+x-client-id: <uuid>
+
+---
+
+## Flow
+
+1. WS message received
+2. Forwarded to HTTP backend
+3. Response returned
+4. Sent back to WS client
+
+---
+
+# Push API
 
 ## Endpoint
 
-```
 POST /push
-```
 
 ---
 
 ## Headers
 
-| Header        | Description                       |
-| ------------- | --------------------------------- |
-| `x-client-id` | Target client ID or `"broadcast"` |
-| `x-api-key`   | Required if `push_api_key` is set |
-
----
-
-## Body
-
-Raw text (same format as WS messages)
+x-client-id: <uuid | broadcast>
+x-api-key: required if configured
 
 ---
 
 ## Examples
 
-### Send to specific client
+### Send to client
 
-```bash
 curl -X POST http://localhost:8080/push \
   -H "x-api-key: my-secret-key" \
   -H "x-client-id: <client-id>" \
   -d "hello client"
-```
 
 ---
 
-### Broadcast to all clients
+### Broadcast
 
-```bash
 curl -X POST http://localhost:8080/push \
   -H "x-api-key: my-secret-key" \
   -H "x-client-id: broadcast" \
   -d "hello everyone"
-```
 
 ---
 
 # Response Codes
 
-| Status | Meaning           |
-| ------ | ----------------- |
-| 201    | Message sent      |
-| 400    | Missing client ID |
-| 401    | Unauthorized      |
-| 404    | Client not found  |
+201 → Message delivered
+400 → Missing client ID
+401 → Unauthorized
+404 → Client not found
 
 ---
 
 # Client Identification
 
-Each WebSocket connection receives a unique:
+Each WebSocket connection receives:
 
-```
 x-client-id: <uuid>
-```
 
-This is:
-
-* generated automatically
-* sent to backend on each request
-* used by backend to push responses
+Used for:
+- backend targeting
+- push routing
+- session identification
 
 ---
 
 # Configuration
 
-```ts
 interface GatewayConfig {
   target_url: string;
   push_api_key?: string;
   max_idle_millis?: number;
 }
-```
 
 ---
 
-## Options
+## target_url
 
-### `target_url` (required)
-
-Base HTTP endpoint where WS messages are forwarded.
-
-Example:
-
-```
+Base HTTP backend URL:
 http://localhost:5678
-```
 
 ---
 
-### `push_api_key` (optional)
+## push_api_key
 
-Enables authentication for `/push`.
-
-If set:
-
-* all push requests must include `x-api-key`
+If set, required for /push requests.
 
 ---
 
-### `max_idle_millis` (optional)
+## max_idle_millis
 
-Default:
+Default: 5 minutes
 
-```
-5 minutes
-```
-
-If no messages are received within this time:
-
-* connection is closed automatically
+Closes idle WS connections.
 
 ---
 
-# Routing
+# Routing Rules
 
-WebSocket paths are preserved:
+Allowed:
+- /ws/*
 
-```
-ws://host/chat   → POST /chat
-ws://host/echo   → POST /echo
-```
+Rejected:
+- everything else (400 Bad Request)
+
+---
+
+## Example mapping
+
+/ws/chat/a → /chat/a
+/ws/webhook/x → /webhook/x
 
 ---
 
 # Error Handling
 
-If HTTP request fails:
+Backend failure returns:
 
-```json
 { "error": "proxy_error" }
-```
-
-is sent back to the WebSocket client.
 
 ---
 
 # Notes
 
-* Uses plain text payloads (`text/plain`)
-* No JSON parsing by default
-* WebSocket connections are stateful (tracked in memory)
+- Plain text payloads only
+- No JSON enforcement
+- In-memory client registry
+- Stateless backend integration
 
 ---
 
 # Limitations
 
-* No persistence (clients stored in memory)
-* No horizontal scaling (requires shared state)
-* No built-in authentication for WS connections
-* No retry logic for failed HTTP requests
+- No persistence layer
+- No horizontal scaling support
+- No WS auth system
+- No retry mechanism
+- Timer-based idle cleanup
 
 ---
 
 # Recommended Improvements
 
-* Add client authentication
-* Add message queue / retry
-* Support JSON payloads
-* Externalize client store (Redis)
-* Add health check endpoint
+- Redis client store
+- JWT authentication
+- JSON protocol layer
+- Retry queue
+- Metrics/observability
+- Health checks
 
 ---
 
 # Summary
 
-This gateway provides a minimal but flexible way to:
-
-* bridge WebSocket clients with HTTP systems
-* implement real-time messaging on top of existing APIs
-* enable backend-driven push notifications
-
----
+This gateway bridges WebSocket clients with HTTP webhook systems, enabling real-time communication while keeping routing strictly separated under the `/ws` namespace.

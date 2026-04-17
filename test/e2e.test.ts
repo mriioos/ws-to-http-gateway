@@ -6,7 +6,7 @@ import wsToHttpGateway from "../src/gateway";
 
 // Set test parameters
 const GATEWAY_PORT = 8080;
-const TARGET_PORT = 5678;
+const TARGET_PORT = 3000;
 const TARGET_URL = `http://localhost:${TARGET_PORT}`;
 const MAX_IDLE_MILLIS = 60_000;
 const PUSH_API_KEY = 'test-api-key';
@@ -66,7 +66,7 @@ gateway.listen(GATEWAY_PORT, () => {
 /**
  * 3. WebSocket client
  */
-const client = new WebSocket(`ws://localhost:${GATEWAY_PORT}/ping`);
+const client = new WebSocket(`ws://localhost:${GATEWAY_PORT}/ws/ping`);
 
 client.on("open", () => {
     console.log("[System] WebSocket client connected to gateway. Pinging backend...\n");

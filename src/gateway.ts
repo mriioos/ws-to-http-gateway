@@ -40,11 +40,22 @@ export default function wsToHttpGateway(config: GatewayConfig) {
 
     // Handle WebSocket upgrade requests manually to support per path routing
     server.on("upgrade", (req, socket, head) => {
-        const url = req.url || "/";
+
+        const raw_url = req.url || "/";
+
+        // Check url starts with /ws, if not reject the connection
+        // This forces the client to connect to the correct path /ws/<backend endpoint> and prevents mixing paths by explicitly using a prefix
+        if (!raw_url.startsWith("/ws")) {
+            socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+            socket.destroy();
+            return;
+        }
+
+        const path = raw_url.replace(/^\/ws/, ""); // Remove the /ws prefix to get the backend endpoint path
 
         wss.handleUpgrade(req, socket, head, (ws) => {
             const client = ws as WSWithMeta;
-            client.path = url;
+            client.path = path;
             client.client_id = randomUUID(); // Assign a unique client ID for push notifications
 
             wss.emit("connection", client, req);
