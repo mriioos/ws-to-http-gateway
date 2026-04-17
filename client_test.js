@@ -1,6 +1,6 @@
 const WebSocket = require("ws");
 
-const client = new WebSocket(`ws://localhost:8079/ping`);
+const client = new WebSocket(`ws://localhost:8079/ws/ping`);
 
 client.on("open", () => {
     console.log("WebSocket client connected to gateway. Pinging backend...");
