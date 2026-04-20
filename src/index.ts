@@ -1,52 +1,46 @@
-import wsToHttpGateway from "./gateway";
+import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import express from "express";
+import { WebSocketServer } from "ws";
+import { authMiddleware } from "./middleware/auth.js";
+import { connectionRouter } from "./handlers/connection.js";
+import { messageRouter } from "./handlers/message.js";
+import { setupWsInbound } from "./handlers/ws_inbound.js";
 
-// Load environment variables
-const TARGET_URL = process.env.TARGET_URL as string;
-const GATEWAY_PORT = Number.parseInt(process.env.GATEWAY_PORT as string) || 8080;
-const MAX_IDLE_MILLIS = Number.parseInt(process.env.MAX_IDLE_MILLIS as string) || 5 * 60 * 1000; // milliseconds before closing idle connections
-const PUSH_API_KEY = process.env.PUSH_API_KEY;
-
-// Validate target URL
-if (!TARGET_URL) {
-    console.error("Error: TARGET_URL environment variable is not set.");
-    process.exit(1);
+export interface ServerInstance {
+  server: http.Server;
+  close: () => Promise<void>;
 }
 
-try{
+export function createServer(): ServerInstance {
+  const backendUrl = process.env.BACKEND_URL;
+  if (!backendUrl) {
+    throw new Error("BACKEND_URL environment variable is required");
+  }
+  process.env.BACKEND_URL = backendUrl.replace(/\/$/, "");
 
-    // Validate protocol
-    const aux = new URL(TARGET_URL);
-    if (aux.protocol !== "http:" && aux.protocol !== "https:") {
-        console.error("Error: TARGET_URL must start with http:// or https://");
-        process.exit(1);
-    }
-}
-catch(err){
-    console.error("Error: TARGET_URL environment variable is not a valid URL.");
-    console.error(err);
-    process.exit(1);
-}
+  const app = express();
+  app.use(authMiddleware);
+  app.use(connectionRouter);
+  app.use(messageRouter);
 
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ noServer: true });
+  setupWsInbound(server, wss);
 
-// Validate gateway port
-if (!GATEWAY_PORT) {
-    console.error("Error: GATEWAY_PORT environment variable is not set.");
-    process.exit(1);
-}
+  const close = (): Promise<void> =>
+    new Promise((resolve, reject) =>
+      server.close((err) => (err ? reject(err) : resolve()))
+    );
 
-if (Number.isNaN(GATEWAY_PORT)) {
-    console.error("Error: GATEWAY_PORT environment variable is not a valid number.");
-    process.exit(1);
+  return { server, close };
 }
 
-// Start the WebSocket to HTTP adapter
-const server = wsToHttpGateway({
-    target_url : TARGET_URL,
-    push_api_key : PUSH_API_KEY,
-    max_idle_millis : MAX_IDLE_MILLIS
-});
-
-// Start server
-server.listen(GATEWAY_PORT, () => {
-    console.log(`WS to HTTP gateway running on port ${GATEWAY_PORT}, forwarding to ${TARGET_URL}`);
-});
+if (path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  const port = parseInt(process.env.GATEWAY_PORT ?? "6473", 10);
+  const { server } = createServer();
+  server.listen(port, () => {
+    console.log(`[gateway] listening on port ${port}`);
+  });
+}

@@ -26,8 +26,8 @@ RUN npm install --omit=dev
 # copy compiled output
 COPY --from=builder /app/dist ./dist
 
-# Expose the gateway port specified in .env (default 8080)
-EXPOSE ${GATEWAY_PORT:-8080}
+# Expose the gateway port specified in .env (default 6473)
+EXPOSE ${GATEWAY_PORT:-6473}
 
 # run server
 CMD ["npm", "run", "start"]

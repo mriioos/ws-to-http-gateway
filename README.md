@@ -1,271 +1,179 @@
-# WS → HTTP Gateway
+# ws-to-http-gateway
 
-A lightweight **WebSocket-to-HTTP bridge with bidirectional push support**, designed to integrate WebSocket clients with existing HTTP systems (e.g. n8n webhooks).
-
-It provides:
-
-- WS → HTTP proxying with path mapping
-- Backend → WS push API
-- Broadcast + targeted delivery
-- Explicit `/ws/*` routing boundary for safety
-- Optional API key protection for push endpoint
+A production-ready sidecar that bridges WebSocket connections to an HTTP-only backend. Deploy it alongside any HTTP service to give it real-time WebSocket support without changing the backend code.
 
 ---
 
-# Overview
+## How it works
 
-## Architecture
+The gateway manages two types of connections and two message flows.
 
-**Client Send - Response**
+### Connection types
 
-WS Client
-   ↓ (ws://domain/ws/{backend_path})
-Gateway
-   ↓ (HTTP POST /{backend_path})
-Backend (e.g. n8n)
-   ↓
-Response
-   ↓
-Gateway
-   ↓
-WS Client
+**Inbound** — a WS client connects to the gateway:
+```
+WS client  →  GET /ws/{path}  →  Gateway
+```
 
-**Backend Push to Client**
-Backend
-   ↓ (HTTP POST /push)
-Gateway
-   ↓
-WS Client
+**Outbound** — the backend asks the gateway to open a connection:
+```
+Backend  →  POST /connection { url, path }  →  Gateway  →  WS server
+```
 
----
+Once established, both connection types are identical. Each is registered under a `client_id` and handled by the same logic.
 
-# Key Design Rule of the Gateway
+### Message flows
 
-All WebSocket traffic MUST be prefixed with `/ws`.
+**WS → Backend** (triggered by a WS message arriving at the gateway):
+```
+WS client/server  →  Gateway  →  POST {BACKEND_URL}/{path}
+                                        ↓ (if response body non-empty)
+                  WS client/server  ←  Gateway
+```
 
-This ensures separation between:
-- WebSocket transport layer (`/ws/*`)
-- HTTP API endpoints (`/push`)
-
-Invalid WS paths are rejected with `400 Bad Request`.
-
----
-
-# Features
-
-- WebSocket → HTTP proxy (path-preserving after `/ws` stripping)
-- Automatic client ID generation (`x-client-id`)
-- Backend push API (`/push`)
-- Broadcast support (use `x-client-id : 'broadcast'`)
-- Per-connection idle timeout cleanup
-- Optional API key authentication for backend
-- Strict `/ws` namespace enforcement
-
----
-
-# Installation
-
-npm install
-
----
-
-# Usage
-
-## Basic Setup
-
-import wsToHttpGateway from "./gateway";
-
-const server = wsToHttpGateway({
-    target_url: "http://localhost:8080",
-    push_api_key: "my-secret-key",
-    max_idle_millis: 300000
-});
-
-server.listen(8080);
-
----
-
-# WebSocket Behavior
-
-## Connect
-
-const ws = new WebSocket("ws://localhost:8080/ws/webhook/test");
-
----
-
-## Routing transformation made in Gateway
-
-/ws/webhook/test
-→ /webhook/test
-
----
-
-## HTTP request sent to Backend
-
-POST /webhook/test
-Content-Type: text/plain
-x-client-id: <uuid>
-
----
-
-## Flow
-
-1. WS message received
-2. Forwarded to HTTP backend
-3. Response returned
-4. Sent back to WS client
-
----
-
-# Push API
-
-## Endpoint
-
-POST /push
-
----
-
-## Headers
-
-x-client-id: <uuid | broadcast>
-x-api-key: required if configured
-
----
-
-## Examples
-
-### Send to client
-
-curl -X POST http://localhost:8080/push \
-  -H "x-api-key: my-secret-key" \
-  -H "x-client-id: <client-id>" \
-  -d "hello client"
-
----
-
-### Broadcast
-
-curl -X POST http://localhost:8080/push \
-  -H "x-api-key: my-secret-key" \
-  -H "x-client-id: broadcast" \
-  -d "hello everyone"
-
----
-
-# Response Codes
-
-201 → Message sent
-400 → Missing client ID
-401 → Unauthorized
-404 → Client not found
-
----
-
-# Client Identification
-
-Each WebSocket connection receives:
-
-x-client-id: <uuid>
-
-Used for:
-- backend targeting
-- push routing
-- session identification
-
----
-
-# Configuration
-``` typescript
-interface GatewayConfig {
-    target_url: string;
-    push_api_key?: string;
-    max_idle_millis?: number;
-}
+**Backend → WS** (triggered by the backend calling the gateway):
+```
+Backend  →  POST /message  (x-client-id header)  →  Gateway  →  WS client/server
 ```
 
 ---
 
-## target_url
+## Endpoints
 
-Base HTTP backend URL.
+### WebSocket
 
-Can be configured using `TARGET_URL` env variable.
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/ws/{path}` | Upgrade to WebSocket. Assigns a `client_id`, registers the connection. WS upgrades bypass API key auth. |
 
----
+### HTTP (called by the backend)
 
-## push_api_key
-
-If set, required for /push requests.
-
-Can be configured using `PUSH_API_KEY` env variable.
-
----
-
-## max_idle_millis
-
-Default: 5 minutes
-
-Closes idle WS connections.
-
-Can be configured using `MAX_IDLE_MILLIS` env variable.
+| Method | Path | Headers | Body | Description |
+|--------|------|---------|------|-------------|
+| `POST` | `/connection` | `x-api-key` | `{ url: string, path: string }` | Opens an outbound WS connection to `url`. Returns `{ client_id }`. |
+| `DELETE` | `/connection` | `x-api-key`, `x-client-id` | — | Closes and deregisters the specified connection. |
+| `POST` | `/message` | `x-api-key`, `x-client-id` | raw string or JSON | Sends the body as a WS text message to the specified client. |
 
 ---
 
-# Routing Rules
+## Configuration
 
-Allowed:
-- /ws/*
-
-Rejected:
-- everything else (400 Bad Request)
-
----
-
-## Example mapping
-
-/ws/chat/a → /chat/a
-/ws/webhook/x → /webhook/x
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `BACKEND_URL` | Yes | — | Base URL of the HTTP backend, e.g. `http://localhost:3000` |
+| `GATEWAY_PORT` | No | `6473` | Port the gateway listens on |
+| `BACKEND_API_KEY` | No | — | If set, all HTTP requests to the gateway must include `x-api-key: <value>`. WS connections are exempt. |
 
 ---
 
-# Error Handling
+## Quick start
 
-Backend failure returns:
+### Docker
 
-{ "error": "proxy_error" }
+```bash
+docker build -t ws-to-http-gateway .
 
----
+docker run --rm -p 6473:6473 \
+  -e BACKEND_URL=http://host.docker.internal:3000 \
+  -e BACKEND_API_KEY=my-secret-key \
+  ws-to-http-gateway
+```
 
-# Notes
+### Local (Node.js)
 
-- Plain text payloads only
-- No JSON enforcement
-- In-memory client registry
-- Stateless backend integration
+```bash
+npm install
+BACKEND_URL=http://localhost:3000 BACKEND_API_KEY=my-secret-key npm run dev
+```
 
----
+### Build & run compiled
 
-# Limitations
-
-- No persistence layer on WebSockets
-- No horizontal scaling support
-- No WS auth system
-- No retry mechanism
-- Timer-based idle cleanup
-
----
-
-# Recommended Improvements
-
-- Redis client store
-- JWT authentication for Gateway connection.
-- JSON protocol layer
-- Retry queue
-- Metrics/observability
-- Health checks
+```bash
+npm run build
+BACKEND_URL=http://localhost:3000 npm start
+```
 
 ---
 
-# Summary
+## Usage examples
 
-This gateway bridges WebSocket clients with HTTP webhook systems, enabling real-time communication while keeping routing strictly separated under the `/ws` namespace.
+### Inbound: connect a WS client
+
+```js
+const ws = new WebSocket("ws://localhost:6473/ws/chat");
+
+ws.onmessage = (e) => console.log("from backend:", e.data);
+ws.onopen    = ()  => ws.send(JSON.stringify({ text: "hello" }));
+```
+
+The gateway forwards each message to `POST {BACKEND_URL}/chat` with:
+- `Content-Type: application/json` (if valid JSON) or `text/plain`
+- `x-client-id: <uuid>`
+
+If the backend responds with a non-empty body, that body is sent back to the WS client.
+
+---
+
+### Push a message to a connected client
+
+```bash
+curl -X POST http://localhost:6473/message \
+  -H "x-api-key: my-secret-key" \
+  -H "x-client-id: <client-id>" \
+  -H "Content-Type: text/plain" \
+  -d "hello from backend"
+```
+
+The `client_id` is available in every forwarded request as the `x-client-id` header.
+
+---
+
+### Outbound: backend opens a WS connection
+
+```bash
+curl -X POST http://localhost:6473/connection \
+  -H "x-api-key: my-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{ "url": "wss://example.com/feed", "path": "/events" }'
+# → { "client_id": "..." }
+```
+
+Messages arriving from that WS server are forwarded to `POST {BACKEND_URL}/events`. The backend can push back using `POST /message` with the returned `client_id`.
+
+---
+
+### Close a connection
+
+```bash
+curl -X DELETE http://localhost:6473/connection \
+  -H "x-api-key: my-secret-key" \
+  -H "x-client-id: <client-id>"
+```
+
+---
+
+## Response codes
+
+| Code | Meaning |
+|------|---------|
+| `200` | OK |
+| `201` | Outbound connection created |
+| `400` | Missing or invalid parameter |
+| `401` | Missing or wrong `x-api-key` |
+| `404` | `client_id` not found in registry |
+| `502` | Gateway could not connect to the outbound WS URL |
+| `1011` | WS close code — backend returned 5xx or was unreachable |
+
+---
+
+## Testing
+
+```bash
+# Unit / integration tests
+npm run test
+
+# Full Docker integration test (gateway must be running)
+node docker_test.js
+```
+
+`docker_test.js` starts a local HTTP backend and WSS, then exercises the complete round-trip against a live gateway instance.
